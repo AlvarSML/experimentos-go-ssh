@@ -6,7 +6,6 @@ package main
 import (
 	"encoding/binary"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 type (
@@ -26,6 +26,11 @@ type (
 	Aplication struct {
 		Port    uint
 		Handler AppHandler
+	}
+	SSHServer struct {
+		Config     *ssh.ServerConfig
+		privateKey []byte
+		Channels   any
 	}
 )
 
@@ -55,8 +60,18 @@ func main() {
 	homedir := getHomedir()
 	// Configuracion del servidor y handler de la autenticacion
 	config := &ssh.ServerConfig{
+		ServerVersion: "SSH-2.0-VALVAR",
+		NoClientAuth:  true,
+		// Pre auth se lanza aunque NoClientAuth sea true
+		PreAuthConnCallback: func(pre ssh.ServerPreAuthConn) {
+			user := pre.User()
+			version := string(pre.ClientVersion())
+			remoteAddr := pre.RemoteAddr().String()
+			log.Printf("PreAuth: %s %s %s", user, version, remoteAddr)
+		},
 		PasswordCallback: func(meta ssh.ConnMetadata, passwd []byte) (*ssh.Permissions, error) {
-			fmt.Printf("%s", meta.User())
+			// logica de comprobar la contraseña, a no ser que se devuelva un error esta ok
+			// el valor son los permisos, queda como TODO
 			return nil, nil
 		},
 	}
@@ -88,12 +103,16 @@ func main() {
 
 	for {
 		tcpConn, err := listener.Accept()
+		defer tcpConn.Close()
+
 		if err != nil {
 			log.Printf("Error aceptando la conexion (%s)", err)
 			continue
 		}
 
 		sshConn, channels, requests, err := ssh.NewServerConn(tcpConn, config)
+		defer sshConn.Close()
+
 		if err != nil {
 			log.Printf("Error estableciendo conexion (%s)", err)
 			continue
@@ -101,25 +120,32 @@ func main() {
 
 		log.Printf("Conexion establecida desde %s v(%s)", sshConn.RemoteAddr(), sshConn.ClientVersion())
 
-		// gorutinas
+		// waitgroup para los requests
+		var wg sync.WaitGroup
+		wg.Add(1) // para los descartados
 
-		// No tentiendo porque se descartan el resto de requests de la conexion
-		go ssh.DiscardRequests(requests)
+		go func() {
+			ssh.DiscardRequests(requests)
+			wg.Done()
+		}()
 
-		go handleChannels(channels)
+		go handleChannels(channels, &wg)
 	}
 }
 
 /**
 * La idea es que los canales, peticiones asincronas de cada sesion se gestionen en rutinas
  */
-func handleChannels(chans <-chan ssh.NewChannel) {
+func handleChannels(chans <-chan ssh.NewChannel, wg *sync.WaitGroup) {
 	for nchan := range chans {
-		go handleChannelProgram(nchan)
+
+		log.Printf("Canal tipo: (%s)", nchan.ChannelType())
+
+		go handleChannelProgram(nchan, wg)
 	}
 }
 
-func handleChannelProgram(nchan ssh.NewChannel) {
+func handleChannelProgram(nchan ssh.NewChannel, wg *sync.WaitGroup) {
 	if t := nchan.ChannelType(); t != "session" {
 		ssh.NewChannel.Reject(nchan, ssh.UnknownChannelType, "No implementado")
 		return
@@ -131,22 +157,45 @@ func handleChannelProgram(nchan ssh.NewChannel) {
 		log.Printf("No se acepta el canal (%s)", err)
 	}
 
+	wg.Add(1)
 	// subrutina que muestra en el server que requests estan llegando
-	go func() {
-		for req := range requests {
-			log.Print("Nuevo request")
-			log.Printf("> %s %s %t", req.Type, string(req.Payload), req.WantReply)
+	// acepta un canal de requests
+	go func(requestsIn <-chan *ssh.Request) {
+		for req := range requestsIn {
+			log.Printf("Req: %s %s %t", req.Type, string(req.Payload), req.WantReply)
 			if req.WantReply {
 				req.Reply(true, []byte("Resp OK"))
 			}
 		}
+	}(requests)
+
+	go func() {
+		// var caracter byte
+		var linea []byte
+		for {
+			channel.Read(linea)
+			log.Printf("Linea: %s", string(linea))
+		}
 	}()
 
-	channel.Write([]byte("Test escribe algo:"))
-	var data []byte
-	channel.Read(data)
-	channel.SendRequest("Tests", true, []byte("payload"))
-	log.Print(string(data))
+	termChan := term.NewTerminal(channel, " > ")
+
+	wg.Add(1)
+	go func() {
+		defer func() {
+			channel.Close()
+			wg.Done()
+		}()
+
+		for {
+			line, err := termChan.ReadLine()
+			if err != nil {
+				log.Fatalf("Error en la terminal", err)
+			}
+			log.Print(line)
+			termChan.Write([]byte("recibido\n"))
+		}
+	}()
 }
 
 func handleChannel(nchan ssh.NewChannel) {
