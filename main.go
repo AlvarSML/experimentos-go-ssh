@@ -31,7 +31,6 @@ type (
 
 const (
 	ADRESS = "0.0.0.0:2222"
-	PASSWD = "pass"
 )
 
 func (app *Aplication) Handle(appHandler AppHandler) {
@@ -67,8 +66,6 @@ func main() {
 		log.Printf("Error clave privada %s", err)
 		log.Fatal("Fallo leyendo la clave privada")
 	}
-
-	log.Print(string(privateBytes))
 
 	var privateKey ssh.Signer
 	privateKey, err = ssh.ParsePrivateKey(privateBytes)
@@ -134,18 +131,21 @@ func handleChannelProgram(nchan ssh.NewChannel) {
 		log.Printf("No se acepta el canal (%s)", err)
 	}
 
+	// subrutina que muestra en el server que requests estan llegando
 	go func() {
 		for req := range requests {
 			log.Print("Nuevo request")
-			log.Print(req.Type)
-			log.Print(string(req.Payload))
+			log.Printf("> %s %s %t", req.Type, string(req.Payload), req.WantReply)
+			if req.WantReply {
+				req.Reply(true, []byte("Resp OK"))
+			}
 		}
 	}()
 
 	channel.Write([]byte("Test escribe algo:"))
 	var data []byte
 	channel.Read(data)
-
+	channel.SendRequest("Tests", true, []byte("payload"))
 	log.Print(string(data))
 }
 
