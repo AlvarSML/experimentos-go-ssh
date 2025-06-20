@@ -101,12 +101,16 @@ func main() {
 
 	log.Print("Servidor iniciado en ", ADRESS)
 
+	// TODO:
+	// - [x] aceptar conexiones simultaneas
+	// - [ ] un cierre de conexion cierra todo el servidor
 	for {
 		tcpConn, err := listener.Accept()
 		defer tcpConn.Close()
 
 		if err != nil {
 			log.Printf("Error aceptando la conexion (%s)", err)
+
 			continue
 		}
 
@@ -168,15 +172,6 @@ func handleChannelProgram(nchan ssh.NewChannel, wg *sync.WaitGroup) {
 			}
 		}
 	}(requests)
-
-	go func() {
-		// var caracter byte
-		var linea []byte
-		for {
-			channel.Read(linea)
-			log.Printf("Linea: %s", string(linea))
-		}
-	}()
 
 	termChan := term.NewTerminal(channel, " > ")
 
